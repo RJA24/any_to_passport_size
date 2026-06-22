@@ -1,3 +1,5 @@
 streamlit
-pillow
+Pillow
 rembg
+numba>=0.60.0
+pymatting>=1.1.15
