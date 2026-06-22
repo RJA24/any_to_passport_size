@@ -4,3 +4,4 @@ rembg
 numba>=0.60.0
 pymatting>=1.1.15
 onnxruntime
+opencv-python-headless
