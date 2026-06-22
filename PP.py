@@ -28,13 +28,15 @@ def auto_crop_face(image_pil):
     # Target Philippine Passport Dimensions (413x531 px)
     target_w, target_h = 413, 531
     
-    # The detector finds the face (eyes to chin). The true head (chin to crown) is about 1.3x taller.
-    true_head_h = h * 1.3
+    # REVISED MATH:
+    # The true full head (chin to crown) is about 1.6x taller than the core face box.
+    true_head_h = h * 1.6
     
-    # The head must cover ~75% of the total height to meet the 70-80% PH requirement
-    target_head_h = target_h * 0.75
+    # Aim for a safer 68% of the total height to give proper breathing room 
+    # and guarantee the ~5mm gap at the top.
+    target_head_h = target_h * 0.68
     
-    # Calculate how much we need to zoom in
+    # Calculate how much we need to zoom in/out
     scale = target_head_h / true_head_h
     
     # Resize the entire image by the zoom scale
@@ -44,15 +46,16 @@ def auto_crop_face(image_pil):
     # Scale the face coordinates to match the new zoomed image
     sx, sy, sw, sh = int(x * scale), int(y * scale), int(w * scale), int(h * scale)
     
-    # Estimate the top of the hair and add a 5mm gap (~59 pixels at 300 DPI) above it
-    top_of_hair = sy - int(sh * 0.25)
-    crop_top = top_of_hair - 59
-    
-    # Center the face horizontally
+    # REVISED CENTERING:
+    # Find the center of the detected face (usually right around the nose)
     face_center_x = sx + (sw // 2)
-    crop_left = face_center_x - (target_w // 2)
+    face_center_y = sy + (sh // 2)
     
-    # Create a massive padded white canvas so we don't accidentally crop outside the image boundaries
+    # Position the nose slightly above the absolute vertical center of the photo (at ~45% height)
+    crop_left = face_center_x - (target_w // 2)
+    crop_top = face_center_y - int(target_h * 0.45)
+    
+    # Create a padded white canvas so we don't accidentally crop outside boundaries
     padded_img = Image.new("RGB", (new_size[0] + target_w*2, new_size[1] + target_h*2), "white")
     padded_img.paste(img_scaled, (target_w, target_h))
     
