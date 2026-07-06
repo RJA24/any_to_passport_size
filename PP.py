@@ -81,8 +81,11 @@ def create_ph_passport_photo(image, name):
             # Try to load Windows font
             font = ImageFont.truetype("arial.ttf", 30)
         except IOError:
-            # FIX: If Arial fails, use Pillow's modern default scalable font so the text isn't tiny
-            font = ImageFont.load_default(size=30)
+            # Bulletproof fallback to prevent crashes on older Pillow versions
+            try:
+                font = ImageFont.load_default(size=30)
+            except TypeError:
+                font = ImageFont.load_default()
             
         bbox = draw.textbbox((0, 0), name, font=font)
         text_width = bbox[2] - bbox[0]
@@ -123,6 +126,7 @@ if uploaded_file is not None and generate_button:
         
         if remove_bg:
             subject_only = remove(original_image)
+            # Paste the RGBA subject over a pure white RGB background
             white_background = Image.new("RGB", subject_only.size, "white")
             white_background.paste(subject_only, (0, 0), subject_only)
             image_to_process = white_background
