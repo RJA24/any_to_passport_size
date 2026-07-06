@@ -7,66 +7,71 @@ from rembg import remove
 import os
 
 def auto_crop_face(image_pil):
-    # Convert the PIL image to an OpenCV array
-    img_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-    
-    # USE THE BUILT-IN OPENCV PATH (No XML file required in your repo!)
-    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    face_cascade = cv2.CascadeClassifier(cascade_path)
-    
-    # Check if the cascade loaded correctly
-    if face_cascade.empty():
-        # Fallback if the detector fails to initialize
-        return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
-    
-    # Convert image to grayscale for the detector
-    gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
-    
-    # If no face is found, fallback to the standard center crop
-    if len(faces) == 0:
-        return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
+    try:
+        # Convert the PIL image to an OpenCV array
+        img_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
         
-    # Grab the largest face detected in the photo
-    faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
-    x, y, w, h = faces[0]
-    
-    # Target Philippine Passport Dimensions (413x531 px)
-    target_w, target_h = 413, 531
-    
-    # The true full head (chin to crown) is about 1.6x taller than the core face box.
-    true_head_h = h * 1.6
-    
-    # Aim for a safer 68% of the total height to give proper breathing room 
-    target_head_h = target_h * 0.68
-    
-    # Calculate how much we need to zoom in/out
-    scale = target_head_h / true_head_h
-    
-    # Resize the entire image by the zoom scale
-    new_size = (int(image_pil.width * scale), int(image_pil.height * scale))
-    img_scaled = image_pil.resize(new_size, Image.Resampling.LANCZOS)
-    
-    # Scale the face coordinates to match the new zoomed image
-    sx, sy, sw, sh = int(x * scale), int(y * scale), int(w * scale), int(h * scale)
-    
-    # Position the nose slightly above the absolute vertical center of the photo (at ~45% height)
-    face_center_x = sx + (sw // 2)
-    face_center_y = sy + (sh // 2)
-    
-    crop_left = face_center_x - (target_w // 2)
-    crop_top = face_center_y - int(target_h * 0.45)
-    
-    # Create a padded white canvas
-    padded_img = Image.new("RGB", (new_size[0] + target_w*2, new_size[1] + target_h*2), "white")
-    padded_img.paste(img_scaled, (target_w, target_h))
-    
-    # Apply the final precise crop
-    final_left = crop_left + target_w
-    final_top = crop_top + target_h
-    final_crop = padded_img.crop((final_left, final_top, final_left + target_w, final_top + target_h))
-    
-    return final_crop
+        # USE THE BUILT-IN OPENCV PATH
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        face_cascade = cv2.CascadeClassifier(cascade_path)
+        
+        # Check if the cascade loaded correctly
+        if face_cascade.empty():
+            return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
+        
+        # Convert image to grayscale for the detector
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
+        
+        # If no face is found, fallback to the standard center crop
+        if len(faces) == 0:
+            return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
+            
+        # Grab the largest face detected in the photo
+        faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
+        x, y, w, h = faces[0]
+        
+        # Target Philippine Passport Dimensions (413x531 px)
+        target_w, target_h = 413, 531
+        
+        # The true full head (chin to crown) is about 1.6x taller than the core face box.
+        true_head_h = h * 1.6
+        
+        # Aim for a safer 68% of the total height to give proper breathing room 
+        target_head_h = target_h * 0.68
+        
+        # Calculate how much we need to zoom in/out
+        scale = target_head_h / true_head_h
+        
+        # Resize the entire image by the zoom scale
+        new_size = (int(image_pil.width * scale), int(image_pil.height * scale))
+        img_scaled = image_pil.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Scale the face coordinates to match the new zoomed image
+        sx, sy, sw, sh = int(x * scale), int(y * scale), int(w * scale), int(h * scale)
+        
+        # Position the nose slightly above the absolute vertical center of the photo
+        face_center_x = sx + (sw // 2)
+        face_center_y = sy + (sh // 2)
+        
+        crop_left = face_center_x - (target_w // 2)
+        crop_top = face_center_y - int(target_h * 0.45)
+        
+        # Create a padded white canvas
+        padded_img = Image.new("RGB", (new_size[0] + target_w*2, new_size[1] + target_h*2), "white")
+        padded_img.paste(img_scaled, (target_w, target_h))
+        
+        # Apply the final precise crop
+        final_left = crop_left + target_w
+        final_top = crop_top + target_h
+        final_crop = padded_img.crop((final_left, final_top, final_left + target_w, final_top + target_h))
+        
+        return final_crop
+        
+    except (AttributeError, Exception):
+        # Failsafe: If Streamlit Cloud's OpenCV environment is missing attributes or crashes,
+        # gracefully fallback to a high-quality center crop.
+        return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
 
 def create_ph_passport_photo(image, name):
     # Run the smart auto-zoom instead of the blind center crop
