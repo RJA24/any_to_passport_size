@@ -9,9 +9,14 @@ def auto_crop_face(image_pil):
     # Convert the PIL image to an OpenCV array
     img_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
     
-    # Load OpenCV's built-in facial recognition tool
-    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    # LOAD FROM LOCAL FILE instead of server path
+    cascade_path = 'haarcascade_frontalface_default.xml'
     face_cascade = cv2.CascadeClassifier(cascade_path)
+    
+    # Check if the cascade loaded correctly
+    if face_cascade.empty():
+        # Fallback if the XML isn't found
+        return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
     
     # Convert image to grayscale for the detector
     gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
