@@ -4,18 +4,19 @@ import io
 import cv2
 import numpy as np
 from rembg import remove
+import os
 
 def auto_crop_face(image_pil):
     # Convert the PIL image to an OpenCV array
     img_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
     
-    # LOAD FROM LOCAL FILE instead of server path
-    cascade_path = 'haarcascade_frontalface_default.xml'
+    # USE THE BUILT-IN OPENCV PATH (No XML file required in your repo!)
+    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
     face_cascade = cv2.CascadeClassifier(cascade_path)
     
     # Check if the cascade loaded correctly
     if face_cascade.empty():
-        # Fallback if the XML isn't found
+        # Fallback if the detector fails to initialize
         return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
     
     # Convert image to grayscale for the detector
@@ -33,12 +34,10 @@ def auto_crop_face(image_pil):
     # Target Philippine Passport Dimensions (413x531 px)
     target_w, target_h = 413, 531
     
-    # REVISED MATH:
     # The true full head (chin to crown) is about 1.6x taller than the core face box.
     true_head_h = h * 1.6
     
     # Aim for a safer 68% of the total height to give proper breathing room 
-    # and guarantee the ~5mm gap at the top.
     target_head_h = target_h * 0.68
     
     # Calculate how much we need to zoom in/out
@@ -51,16 +50,14 @@ def auto_crop_face(image_pil):
     # Scale the face coordinates to match the new zoomed image
     sx, sy, sw, sh = int(x * scale), int(y * scale), int(w * scale), int(h * scale)
     
-    # REVISED CENTERING:
-    # Find the center of the detected face (usually right around the nose)
+    # Position the nose slightly above the absolute vertical center of the photo (at ~45% height)
     face_center_x = sx + (sw // 2)
     face_center_y = sy + (sh // 2)
     
-    # Position the nose slightly above the absolute vertical center of the photo (at ~45% height)
     crop_left = face_center_x - (target_w // 2)
     crop_top = face_center_y - int(target_h * 0.45)
     
-    # Create a padded white canvas so we don't accidentally crop outside boundaries
+    # Create a padded white canvas
     padded_img = Image.new("RGB", (new_size[0] + target_w*2, new_size[1] + target_h*2), "white")
     padded_img.paste(img_scaled, (target_w, target_h))
     
