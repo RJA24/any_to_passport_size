@@ -69,8 +69,8 @@ def build_preview(source_image: Image.Image, face_box, name_text: str):
     return standard, named
 
 
-st.set_page_config(page_title="PH ID Photo Maker", page_icon="📸", layout="centered")
-st.title("📸 PH ID Photo Generator")
+st.set_page_config(page_title="PH ID Photo Maker", page_icon="", layout="centered")
+st.title("PH ID Photo Generator")
 st.markdown(
     "Create a **35 × 45 mm (413 × 531 px at 300 DPI)** ID-photo template, "
     "with optional white-background removal and a name strip. "
@@ -250,4 +250,3 @@ if result:
 
 
 
-    
