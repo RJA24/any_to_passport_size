@@ -1,7 +1,5 @@
-streamlit
-Pillow
-rembg
-numba>=0.60.0
-pymatting>=1.1.15
-onnxruntime
-opencv-python-headless
+streamlit>=1.42,<2
+Pillow>=10.4,<13
+numpy>=1.26,<2.3
+opencv-python-headless>=4.10,<5
+rembg[cpu]>=2.0.67,<3

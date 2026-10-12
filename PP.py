@@ -1,165 +1,250 @@
-import streamlit as st
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+"""Streamlit entry point for the Philippine ID-photo maker."""
+
+import hashlib
 import io
-import cv2
-import numpy as np
-from rembg import remove
-import os
 
-def auto_crop_face(image_pil):
-    try:
-        # Convert the PIL image to an OpenCV array
-        img_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
-        
-        # USE THE BUILT-IN OPENCV PATH
-        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        face_cascade = cv2.CascadeClassifier(cascade_path)
-        
-        # Check if the cascade loaded correctly
-        if face_cascade.empty():
-            return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
-        
-        # Convert image to grayscale for the detector
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(50, 50))
-        
-        # If no face is found, fallback to the standard center crop
-        if len(faces) == 0:
-            return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
-            
-        # Grab the largest face detected in the photo
-        faces = sorted(faces, key=lambda x: x[2]*x[3], reverse=True)
-        x, y, w, h = faces[0]
-        
-        # Target Philippine Passport Dimensions (413x531 px)
-        target_w, target_h = 413, 531
-        
-        # The true full head (chin to crown) is about 1.6x taller than the core face box.
-        true_head_h = h * 1.6
-        
-        # Aim for a safer 68% of the total height to give proper breathing room 
-        target_head_h = target_h * 0.68
-        
-        # Calculate how much we need to zoom in/out
-        scale = target_head_h / true_head_h
-        
-        # Resize the entire image by the zoom scale
-        new_size = (int(image_pil.width * scale), int(image_pil.height * scale))
-        img_scaled = image_pil.resize(new_size, Image.Resampling.LANCZOS)
-        
-        # Scale the face coordinates to match the new zoomed image
-        sx, sy, sw, sh = int(x * scale), int(y * scale), int(w * scale), int(h * scale)
-        
-        # Position the nose slightly above the absolute vertical center of the photo
-        face_center_x = sx + (sw // 2)
-        face_center_y = sy + (sh // 2)
-        
-        crop_left = face_center_x - (target_w // 2)
-        crop_top = face_center_y - int(target_h * 0.45)
-        
-        # Create a padded white canvas
-        padded_img = Image.new("RGB", (new_size[0] + target_w*2, new_size[1] + target_h*2), "white")
-        padded_img.paste(img_scaled, (target_w, target_h))
-        
-        # Apply the final precise crop
-        final_left = crop_left + target_w
-        final_top = crop_top + target_h
-        final_crop = padded_img.crop((final_left, final_top, final_left + target_w, final_top + target_h))
-        
-        return final_crop
-        
-    except (AttributeError, Exception):
-        # Failsafe: If Streamlit Cloud's OpenCV environment is missing attributes or crashes,
-        # gracefully fallback to a high-quality center crop.
-        return ImageOps.fit(image_pil, (413, 531), Image.Resampling.LANCZOS)
+import streamlit as st
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-def create_ph_passport_photo(image, name):
-    # Run the smart auto-zoom instead of the blind center crop
-    img_cropped = auto_crop_face(image)
-    
-    if name:
-        final_img = Image.new('RGB', (413, 611), 'white')
-        final_img.paste(img_cropped, (0, 0))
-        draw = ImageDraw.Draw(final_img)
-        
-        try:
-            # Try to load Windows font
-            font = ImageFont.truetype("arial.ttf", 30)
-        except IOError:
-            # Bulletproof fallback to prevent crashes on older Pillow versions
-            try:
-                font = ImageFont.load_default(size=30)
-            except TypeError:
-                font = ImageFont.load_default()
-            
-        bbox = draw.textbbox((0, 0), name, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
-        
-        x = (413 - text_width) / 2
-        y = 531 + (80 - text_height) / 2 - 5 
-        
-        draw.text((x, y), name.upper(), fill="black", font=font)
-    else:
-        final_img = img_cropped
-        
-    return final_img
+from photo_utils import (
+    DEFAULT_HEAD_RATIO,
+    DEFAULT_TOP_MARGIN_RATIO,
+    PRINT_DPI,
+    add_name_strip,
+    detect_primary_face,
+    render_passport_photo,
+)
 
-# --- Streamlit Web App Interface ---
+MAX_UPLOAD_MB = 15
+MAX_IMAGE_PIXELS = 25_000_000
+
+
+@st.cache_resource(show_spinner=False)
+def get_background_removal_session():
+    """Load the model once per app process, rather than once per photo."""
+    from rembg import new_session
+
+    return new_session("u2net")
+
+
+def make_background_white(image: Image.Image) -> Image.Image:
+    from rembg import remove
+
+    subject = remove(image, session=get_background_removal_session())
+    if isinstance(subject, bytes):
+        subject = Image.open(io.BytesIO(subject))
+    subject_rgba = subject.convert("RGBA")
+    white = Image.new("RGBA", subject_rgba.size, (255, 255, 255, 255))
+    return Image.alpha_composite(white, subject_rgba).convert("RGB")
+
+
+def read_uploaded_photo(data: bytes) -> Image.Image:
+    with Image.open(io.BytesIO(data)) as opened:
+        if opened.width * opened.height > MAX_IMAGE_PIXELS:
+            raise ValueError("Image is too large. Please upload a photo under 25 megapixels.")
+        corrected = ImageOps.exif_transpose(opened)
+        rgba = corrected.convert("RGBA")
+        return Image.alpha_composite(
+            Image.new("RGBA", rgba.size, "white"), rgba
+        ).convert("RGB")
+
+
+def jpeg_download(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95, subsampling=0, dpi=PRINT_DPI)
+    return buffer.getvalue()
+
+
+def build_preview(source_image: Image.Image, face_box, name_text: str):
+    standard = render_passport_photo(
+        source_image,
+        face_box=face_box,
+        zoom=st.session_state.get("frame_zoom", 1.0),
+        x_shift=st.session_state.get("frame_x_shift", 0.0),
+        y_shift=st.session_state.get("frame_y_shift", 0.0),
+        head_ratio=st.session_state.get("frame_head_ratio", DEFAULT_HEAD_RATIO),
+        top_margin_ratio=st.session_state.get("frame_top_margin", DEFAULT_TOP_MARGIN_RATIO),
+    )
+    named = add_name_strip(standard, name_text) if name_text.strip() else None
+    return standard, named
+
 
 st.set_page_config(page_title="PH ID Photo Maker", page_icon="📸", layout="centered")
-
-st.title("📸 ID Photo Generator Pro")
-st.markdown("Instantly format photos to the official **35mm x 45mm** Philippine requirement. Features AI background removal and smart biometric face scaling.")
+st.title("📸 PH ID Photo Generator")
+st.markdown(
+    "Create a **35 × 45 mm (413 × 531 px at 300 DPI)** ID-photo template, "
+    "with optional white-background removal and a name strip. "
+    "The app now uses smarter face-based framing plus manual fine-tuning. "
+    "Photo requirements vary by agency—check the rules for your application."
+)
 st.divider()
 
 with st.form("photo_settings"):
     st.subheader("1. Upload & Settings")
-    
-    uploaded_file = st.file_uploader("Upload a clear, front-facing photo", type=["jpg", "jpeg", "png"])
-    name_input = st.text_input("Name Tag (Optional)", placeholder="e.g. JUAN DELA CRUZ")
-    
-    remove_bg = st.checkbox("Automatically remove background and make it pure white", value=True)
-    
-    generate_button = st.form_submit_button("Generate Photo", type="primary", use_container_width=True)
+    uploaded_file = st.file_uploader(
+        "Upload a clear, front-facing photo", type=["jpg", "jpeg", "png"]
+    )
+    name_input = st.text_input(
+        "Name strip (optional)", placeholder="e.g. JUAN DELA CRUZ", max_chars=100
+    )
+    remove_bg = st.checkbox("Remove background and replace with white", value=True)
+    generate_button = st.form_submit_button(
+        "Generate Photo", type="primary", use_container_width=True
+    )
 
-if uploaded_file is not None and generate_button:
-    
-    with st.spinner("Processing your photo..."):
-        original_image = Image.open(uploaded_file).convert("RGB")
-        image_to_process = original_image
-        
-        if remove_bg:
-            subject_only = remove(original_image)
-            # Paste the RGBA subject over a pure white RGB background
-            white_background = Image.new("RGB", subject_only.size, "white")
-            white_background.paste(subject_only, (0, 0), subject_only)
-            image_to_process = white_background
-            
-        processed_image = create_ph_passport_photo(image_to_process, name_input)
-    
-    st.success("Photo formatted successfully!")
-    
+upload_data = uploaded_file.getvalue() if uploaded_file is not None else None
+upload_fingerprint = hashlib.sha256(upload_data).hexdigest() if upload_data else None
+if (
+    "photo_result" in st.session_state
+    and st.session_state.photo_result["upload_fingerprint"] != upload_fingerprint
+):
+    del st.session_state.photo_result
+
+if generate_button:
+    if not upload_data:
+        st.warning("Please upload a photo first.")
+    elif len(upload_data) > MAX_UPLOAD_MB * 1024 * 1024:
+        st.error(f"Please upload a file smaller than {MAX_UPLOAD_MB} MB.")
+    else:
+        st.session_state.pop("photo_result", None)
+        try:
+            with st.spinner("Processing your photo..."):
+                original = read_uploaded_photo(upload_data)
+                face_box = detect_primary_face(original)
+                processed_source = original
+                bg_warning = None
+                if remove_bg:
+                    try:
+                        processed_source = make_background_white(original)
+                    except Exception:
+                        bg_warning = (
+                            "Background removal was unavailable. The photo was generated "
+                            "with its original background instead."
+                        )
+
+                st.session_state.frame_zoom = 1.0
+                st.session_state.frame_x_shift = 0.0
+                st.session_state.frame_y_shift = 0.0
+                st.session_state.frame_head_ratio = DEFAULT_HEAD_RATIO
+                st.session_state.frame_top_margin = DEFAULT_TOP_MARGIN_RATIO
+
+                st.session_state.photo_result = {
+                    "original": original,
+                    "processed_source": processed_source,
+                    "face_box": face_box,
+                    "face_found": face_box is not None,
+                    "bg_warning": bg_warning,
+                    "upload_fingerprint": upload_fingerprint,
+                    "name_input": name_input,
+                }
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+            st.error(f"Unable to read this photo: {exc}")
+        except Exception as exc:
+            st.error(f"Could not generate the photo: {exc}")
+
+result = st.session_state.get("photo_result")
+if result:
+    st.success("Photo generated successfully!")
+    if not result["face_found"]:
+        st.info("No frontal face was detected; a centered crop is being used. Fine-tuning controls are limited in this case.")
+    else:
+        st.info("Auto-framing has been applied. You can fine-tune the framing below if needed.")
+    if result["bg_warning"]:
+        st.warning(result["bg_warning"])
+
+    st.subheader("2. Fine-tune Framing")
+    st.caption("Adjust the framing if the auto crop is too tight, too low, or slightly off-center.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.slider(
+            "Zoom",
+            min_value=0.70,
+            max_value=1.35,
+            value=float(st.session_state.get("frame_zoom", 1.0)),
+            step=0.01,
+            key="frame_zoom",
+            help="Higher values zoom in more; lower values zoom out for more shoulders/background.",
+            disabled=not result["face_found"],
+        )
+        st.slider(
+            "Move left / right",
+            min_value=-0.20,
+            max_value=0.20,
+            value=float(st.session_state.get("frame_x_shift", 0.0)),
+            step=0.005,
+            key="frame_x_shift",
+            help="Negative = move crop left, positive = move crop right.",
+            disabled=not result["face_found"],
+        )
+        st.slider(
+            "Move up / down",
+            min_value=-0.20,
+            max_value=0.20,
+            value=float(st.session_state.get("frame_y_shift", 0.0)),
+            step=0.005,
+            key="frame_y_shift",
+            help="Negative = move crop up, positive = move crop down.",
+            disabled=not result["face_found"],
+        )
+    with c2:
+        st.slider(
+            "Estimated head size",
+            min_value=0.56,
+            max_value=0.72,
+            value=float(st.session_state.get("frame_head_ratio", DEFAULT_HEAD_RATIO)),
+            step=0.005,
+            key="frame_head_ratio",
+            help="Larger values make the head occupy more of the photo height.",
+            disabled=not result["face_found"],
+        )
+        st.slider(
+            "Top headroom",
+            min_value=0.04,
+            max_value=0.14,
+            value=float(st.session_state.get("frame_top_margin", DEFAULT_TOP_MARGIN_RATIO)),
+            step=0.005,
+            key="frame_top_margin",
+            help="Controls empty space above the head.",
+            disabled=not result["face_found"],
+        )
+        if st.button("Reset framing", use_container_width=True, disabled=not result["face_found"]):
+            st.session_state.frame_zoom = 1.0
+            st.session_state.frame_x_shift = 0.0
+            st.session_state.frame_y_shift = 0.0
+            st.session_state.frame_head_ratio = DEFAULT_HEAD_RATIO
+            st.session_state.frame_top_margin = DEFAULT_TOP_MARGIN_RATIO
+
+    standard_photo, named_photo = build_preview(
+        result["processed_source"], result["face_box"], result["name_input"]
+    )
+
     col1, col2 = st.columns(2)
     with col1:
-        st.caption("Original Image")
-        st.image(original_image, use_container_width=True)
-        
+        st.caption("Original photo")
+        st.image(result["original"], use_container_width=True)
     with col2:
-        st.caption("Official 35x45mm Size (Auto-Zoomed)")
-        st.image(processed_image, use_container_width=True)
-        
-    st.divider()
-    
-    buf = io.BytesIO()
-    processed_image.save(buf, format="JPEG", quality=100)
-    byte_im = buf.getvalue()
-    
+        st.caption("Final 35 × 45 mm preview")
+        st.image(standard_photo, use_container_width=True)
+
     st.download_button(
-        label="⬇️ Download Ready-to-Print Photo",
-        data=byte_im,
-        file_name="ph_passport_photo_pro.jpg",
+        "⬇️ Download 35 × 45 mm Photo (JPG)",
+        data=jpeg_download(standard_photo),
+        file_name="ph_id_photo_35x45mm.jpg",
         mime="image/jpeg",
         type="primary",
-        use_container_width=True
+        use_container_width=True,
     )
+
+    if named_photo is not None:
+        st.divider()
+        st.caption("Name-tag version (413 × 611 px: taller than the 35 × 45 mm photo)")
+        st.image(named_photo, width=300)
+        st.download_button(
+            "⬇️ Download Photo With Name Strip (JPG)",
+            data=jpeg_download(named_photo),
+            file_name="ph_id_photo_with_name.jpg",
+            mime="image/jpeg",
+            use_container_width=True,
+        )
+    
